@@ -35,6 +35,8 @@ extern void 	pd_protocol_sink_deinit(void);
 extern void 	pd_1ms_int_handler(void);				//需要定时处理的函数，定时处理时长为1ms
 extern void 	pd_cmp_int_handler(void);				//cmp中断需处理
 extern uint8_t	pd_sink_RequestPower(PD_Sink_Request_e eSink_Voltage);
+extern uint8_t	pd_sink_request_power_ex(uint16_t hwVoltage_mV,uint16_t hwCurrent_mA);
+extern uint8_t	pd_power_supply(uint16_t hwVoltage_mV,uint16_t hwCurrent_mA);
 //===================================================================================
 #endif
 /******************* (C) COPYRIGHT 2024 APT Chip *****END OF FILE****/

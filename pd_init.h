@@ -106,9 +106,11 @@ typedef enum
 	ePD_RequestVoltage_Wait,	//重新取电等待确认
 	//电源类型
 	ePower_Type_PDO = 0x00,		//固定电压
-//	ePower_Type_Bat = 0x01,
-//	ePower_Type_AVS = 0x02,
-	ePower_Type_PPS = 0x03,		//增强型可变电压/电流
+	ePower_Type_Bat = 0x01,
+	ePower_Type_Variable = 0x02,
+	ePower_Type_APDO = 0x03,
+	ePower_Type_PPS = 0x04,		//SPR PPS APDO
+	ePower_Type_AVS = 0x05,		//EPR AVS APDO
 	//释放计时
 	eRelease_Time = 300000/33,	//us
 	//回复Source的PD版本号
@@ -151,13 +153,16 @@ typedef union
 typedef struct
 {
 	uint8_t				byGetlocation;		//请求对象信息存储位置
-//	uint8_t				byGetType;			//请求类型
+	uint8_t				byGetType;			//请求类型
 	
 	uint8_t				byCC_Ready_Cnt;
 
 	uint8_t				byType;				//供电头一共提供几种电源选择
-	uint16_t			hwVoltage[8];		//最多8中电源选择
+	uint16_t			hwVoltage[8];		//固定PDO电压(兼容旧逻辑)
+	uint16_t			hwVoltage_Min[8];	//支持PPS/AVS最小电压
+	uint16_t			hwVoltage_Max[8];	//支持PPS/AVS最大电压
 	uint16_t			hwCurrent[8];
+	uint8_t				byPowerType[8];		//PDO/APDO类型
 	
 	uint16_t			hwRecordVoltage;	//当前取电电压，上电默认5000mv
 	uint16_t			hwRecordCurrent;	//当前取电电流，默认无功率要求
