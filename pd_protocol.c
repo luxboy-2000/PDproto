@@ -108,6 +108,8 @@ void 		pd_pull_out_judge(void);
 void 		pd_insert(void);
 //REQUEST处理函数
 void pd_request_test(void);
+static uint16_t pd_limit_u16(uint16_t value,uint16_t min_v,uint16_t max_v);
+static void pd_fill_rdo_payload(uint32_t wRdo);
 //接收时等待3个上升沿之后开始采集数据
 __attribute__ (( section (".codeinram"))) void wait_cmp_nbit_data(void);
 //=====================================================================================
@@ -230,56 +232,70 @@ void pd_sink_receive_decode(void)
 			get_recv_data((volatile uint32_t*)&tPD.Source.wTypeData,iRecord_location,tPD.Source.Information.byDataLength);
 			//回读数据结束
 			//回读适配器供电能力
-			tPD.Power.byType = tPD.Source.Information.byDataLength;		//电源选择
-			tPD.Source.Information.byDataLength = 0;
-			volatile uint32_t wTemp;
-			for (uint8_t k = 0; k < tPD.Power.byType;k ++) 
-			{
-				wTemp = tPD.Source.wTypeData[k] & 0xc0000000;
-				wTemp = wTemp >> 30;
-				#ifdef PPS_Request_ENABLE
-				switch(wTemp)
+				tPD.Power.byType = tPD.Source.Information.byDataLength;		//电源选择
+				if(tPD.Power.byType > 8)
+					tPD.Power.byType = 8;
+				tPD.Source.Information.byDataLength = 0;
+				tPD.Power.byGetlocation = tPD.Power.byType;
+				volatile uint32_t wTemp;
+				volatile uint32_t wApdoType;
+				for (uint8_t k = 0; k < tPD.Power.byType;k ++)
 				{
-					case 0x00://固定电压
-						tPD.Power.hwVoltage_Max[k] = ((tPD.Source.wTypeData[k] & 0xffc00) >> 10) * 50;
-						tPD.Power.hwVoltage_Min[k] = tPD.Power.hwVoltage_Max[k];
-						tPD.Power.hwCurrent[k] = (tPD.Source.wTypeData[k] & 0x3ff) * 10;
-					break;
-					case 0X01://电池类型
-					break;
-					case 0X02://可变供应(非电池)
-					break;
-					case 0x03://增强型可编程电源(APDO)					
-						tPD.Power.hwVoltage_Max[k] = ((tPD.Source.wTypeData[k] & 0x1fe0000) >> 17) * 100;
-						tPD.Power.hwVoltage_Min[k] = ((tPD.Source.wTypeData[k] & 0xff00) >> 8) * 100;
-						tPD.Power.hwCurrent[k] = (tPD.Source.wTypeData[k] & 0x7f) * 5;
-					break;
-					default:
-					break;
-				}
-				#else
-				//若不为PDO电压，不进行数据存储，认为无效数据
-				switch(wTemp)
-				{
-					case 0x00://固定电压
-						tPD.Power.hwVoltage[k] = ((tPD.Source.wTypeData[k] & 0xffc00) >> 10) * 50;
-						tPD.Power.hwCurrent[k] = (tPD.Source.wTypeData[k] & 0x3ff) * 10;
-					break;
-					default:
-					break;
-				}	
-				#endif					
-			}
-			//判断获取电压电流，先遍历符合的电压、电流，然后取电，优先固定电压
-			for(uint8_t j = 0;j < tPD.Power.byType; j ++)
-			{//从获取的数据当中回读出电压、电流数据
-				#ifdef PPS_Request_ENABLE
-				if(tPD.Power.hwVoltage_Max[j] == tPD.Power.hwVoltage_Min[j] && tPD.Power.hwVoltage_Max[j] == tPD.hwGetVoltage)
-				{
-					tPD.Power.byGetlocation = j;
-					
-					if(tPD.Power.hwCurrent[j] >= tPD.hwGetCurrent)
+					tPD.Power.byPowerType[k] = ePower_Type_PDO;
+					tPD.Power.hwVoltage[k] = 0;
+					tPD.Power.hwVoltage_Min[k] = 0;
+					tPD.Power.hwVoltage_Max[k] = 0;
+					tPD.Power.hwCurrent[k] = 0;
+					wTemp = tPD.Source.wTypeData[k] & 0xc0000000;
+					wTemp = wTemp >> 30;
+					switch(wTemp)
 					{
+						case 0x00://固定电压
+							tPD.Power.byPowerType[k] = ePower_Type_PDO;
+							tPD.Power.hwVoltage[k] = ((tPD.Source.wTypeData[k] & 0xffc00) >> 10) * 50;
+							tPD.Power.hwVoltage_Max[k] = ((tPD.Source.wTypeData[k] & 0xffc00) >> 10) * 50;
+							tPD.Power.hwVoltage_Min[k] = tPD.Power.hwVoltage_Max[k];
+							tPD.Power.hwCurrent[k] = (tPD.Source.wTypeData[k] & 0x3ff) * 10;
+						break;
+						case 0X01://电池类型
+							tPD.Power.byPowerType[k] = ePower_Type_Bat;
+						break;
+						case 0X02://可变供应(非电池)
+							tPD.Power.byPowerType[k] = ePower_Type_Variable;
+						break;
+						case 0x03://增强型可编程电源(APDO)
+							wApdoType = (tPD.Source.wTypeData[k] >> 28) & 0x03;
+							tPD.Power.byPowerType[k] = ePower_Type_APDO;
+							if(wApdoType == 0x00)
+							{//PPS APDO
+								tPD.Power.byPowerType[k] = ePower_Type_PPS;
+								tPD.Power.hwVoltage_Max[k] = ((tPD.Source.wTypeData[k] & 0x1fe0000) >> 17) * 100;
+								tPD.Power.hwVoltage_Min[k] = ((tPD.Source.wTypeData[k] & 0xff00) >> 8) * 100;
+								tPD.Power.hwCurrent[k] = (tPD.Source.wTypeData[k] & 0x7f) * 50;
+							}
+							else if(wApdoType == 0x01)
+							{//AVS APDO(EPR)
+								tPD.Power.byPowerType[k] = ePower_Type_AVS;
+								tPD.Power.hwVoltage_Max[k] = ((tPD.Source.wTypeData[k] & 0x1ff0000) >> 17) * 100;
+								tPD.Power.hwVoltage_Min[k] = ((tPD.Source.wTypeData[k] & 0x00ff00) >> 8) * 100;
+								tPD.Power.hwCurrent[k] = (tPD.Source.wTypeData[k] & 0x7f) * 50;
+							}
+							if(tPD.Power.hwVoltage_Max[k] == tPD.Power.hwVoltage_Min[k])
+								tPD.Power.hwVoltage[k] = tPD.Power.hwVoltage_Max[k];
+						break;
+						default:
+						break;
+				}
+				}
+				//判断获取电压电流，先遍历符合的电压、电流，然后取电，优先固定电压
+				for(uint8_t j = 0;j < tPD.Power.byType; j ++)
+				{//从获取的数据当中回读出电压、电流数据
+					if(tPD.Power.byPowerType[j] == ePower_Type_PDO && tPD.Power.hwVoltage_Max[j] == tPD.hwGetVoltage)
+					{
+						tPD.Power.byGetlocation = j;
+
+						if(tPD.Power.hwCurrent[j] >= tPD.hwGetCurrent)
+						{
 						tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage_Max[j];
 						tPD.Power.hwRecordCurrent = tPD.hwGetCurrent;	//获取所需电流
 						
@@ -292,46 +308,33 @@ void pd_sink_receive_decode(void)
 						tPD.Power.hwRecordCurrent = tPD.Power.hwCurrent[j];	//获取最大电流
 						
 //						tPD.Power.byGetType = ePower_Type_PDO;
-						break;
+							break;
+						}
 					}
-				}
-				#else
-				if(tPD.Power.hwVoltage[j] == tPD.hwGetVoltage)
-				{
-					tPD.Power.byGetlocation = j;
-					
-					if(tPD.Power.hwCurrent[j] >= tPD.hwGetCurrent)
+					if((tPD.Power.byPowerType[j] == ePower_Type_PPS || tPD.Power.byPowerType[j] == ePower_Type_AVS) &&
+						(tPD.hwGetVoltage >= tPD.Power.hwVoltage_Min[j]) &&
+						(tPD.hwGetVoltage <= tPD.Power.hwVoltage_Max[j]))
 					{
-						tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage[j];
-						tPD.Power.hwRecordCurrent = tPD.hwGetCurrent;			//获取所需电流
-						
-//						tPD.Power.byGetType = ePower_Type_PDO;
+						tPD.Power.byGetlocation = j;
+						tPD.Power.hwRecordVoltage = tPD.hwGetVoltage;
+						if(tPD.Power.hwCurrent[j] >= tPD.hwGetCurrent)
+							tPD.Power.hwRecordCurrent = tPD.hwGetCurrent;
+						else
+							tPD.Power.hwRecordCurrent = tPD.Power.hwCurrent[j];
 						break;
 					}
-					else
-					{
-						tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage[j];
-						tPD.Power.hwRecordCurrent = tPD.Power.hwCurrent[j];	//获取最大电流
-						
-//						tPD.Power.byGetType = ePower_Type_PDO;
-						break;
-					}
+
 				}
-				#endif
-				
-			}
-			if (tPD.Power.byGetlocation >= tPD.Power.byType) 
-			{//限制判断，若取电序列号超过实际存储数据序列，认为无效，取5V
-				tPD.Power.byGetlocation = 0x00;//取电异常
-				//
-				#ifdef PPS_Request_ENABLE
-				tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage_Max[0];
-				#else
-				tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage[0];
-				#endif
-				tPD.Power.hwRecordCurrent = tPD.Power.hwCurrent[0];	
-			}
-			pd_request_test();			//Sink完成取电
+				if (tPD.Power.byGetlocation >= tPD.Power.byType)
+				{//限制判断，若取电序列号超过实际存储数据序列，认为无效，取5V
+					tPD.Power.byGetlocation = 0x00;//取电异常
+					tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage_Max[0];
+					if(tPD.Power.hwRecordVoltage == 0)
+						tPD.Power.hwRecordVoltage = tPD.Power.hwVoltage[0];
+					tPD.Power.hwRecordCurrent = tPD.Power.hwCurrent[0];
+				}
+				tPD.Power.byGetType = tPD.Power.byPowerType[tPD.Power.byGetlocation];
+				pd_request_test();			//Sink完成取电
 			tPD.hwNowVoltage = tPD.Power.hwRecordVoltage;
 			tPD.hwNowCurrent = tPD.Power.hwRecordCurrent;
 		}
@@ -355,24 +358,33 @@ void pd_sink_receive_decode(void)
 }
 void pd_request_test()
 {
-	
-	//默认全部PDO取电
-			//配置最大电流
-			uint32_t	wTemp_Power;
-			wTemp_Power = tPD.Power.hwCurrent[tPD.Power.byGetlocation] / 10;
-			byRequestData[10] = 0;
-			byRequestData[8] = wTemp_Power & 0x0f;
-			byRequestData[9] = (wTemp_Power & 0xf0) >> 4;
-			byRequestData[10] |= (wTemp_Power & 0x300) >> 8;
-			//配置获取的电流
-//			wTemp_Power = tPD.Power.hwRecordCurrent / 10;
-			wTemp_Power = tPD.Power.hwCurrent[tPD.Power.byGetlocation] / 10;
-			byRequestData[10] |= (wTemp_Power & 0x03) << 2;
-			byRequestData[11] = (wTemp_Power & 0x3c) >> 2;
-			byRequestData[12] = (wTemp_Power & 0x3c0) >> 6;
-			//转换4b5b
-			for (uint8_t k = 8; k < 13; k++) 
-				byRequestData[k] = switch_4bTo5b_HexTable_Send[byRequestData[k]];
+	uint32_t wReqObj = 0;
+	uint32_t wOpCurrent = tPD.Power.hwRecordCurrent;
+	uint32_t wTargetVoltage = tPD.Power.hwRecordVoltage;
+
+	tPD.Power.byGetType = tPD.Power.byPowerType[tPD.Power.byGetlocation];
+	if(tPD.Power.byGetType == ePower_Type_PPS || tPD.Power.byGetType == ePower_Type_AVS)
+	{
+		wTargetVoltage = pd_limit_u16(tPD.Power.hwRecordVoltage,
+								  tPD.Power.hwVoltage_Min[tPD.Power.byGetlocation],
+								  tPD.Power.hwVoltage_Max[tPD.Power.byGetlocation]);
+		wOpCurrent = pd_limit_u16(tPD.Power.hwRecordCurrent,0,tPD.Power.hwCurrent[tPD.Power.byGetlocation]);
+		//APDO Request：电流50mA/LSB，电压20mV/LSB（AVS按同一编码路径输出）
+		wReqObj |= ((wOpCurrent / 50) & 0x7F);
+		wReqObj |= (((wTargetVoltage / 20) & 0x1FF) << 9);
+	}
+	else
+	{
+		uint32_t wMaxCurrent = tPD.Power.hwCurrent[tPD.Power.byGetlocation] / 10;
+		uint32_t wOperatingCurrent = wOpCurrent / 10;
+		wReqObj |= (wOperatingCurrent & 0x3FF);
+		wReqObj |= ((wMaxCurrent & 0x3FF) << 10);
+	}
+
+	wReqObj |= ((uint32_t)(tPD.Power.byGetlocation + 1) << 28);
+	pd_fill_rdo_payload(wReqObj);
+	for (uint8_t k = 8; k < 16; k++)
+		byRequestData[k] = switch_4bTo5b_HexTable_Send[byRequestData[k]];
 			//
 			byRequestData[5] = 8;
 			byRequestData[5] = switch_4bTo5b_HexTable_Send[byRequestData[5]] ;//版本号
@@ -386,8 +398,7 @@ void pd_request_test()
 			MessageID ++;
 			if(MessageID > 7)
 				MessageID = 0;
-			byRequestData[15] = switch_4bTo5b_HexTable_Send[tPD.Power.byGetlocation + 1];	//写入或取的电压所在数据包的位置
-			//Header转5bit数据 
+			//Header转5bit数据
 			tPD.Send_CRC.hwHeader = 0x00;
 			for(uint8_t j = 0;j < 4;j++)
 				tPD.Send_CRC.hwHeader |= (switch_5bitTo4bit(switch_4bTo5b_HexTable_Send,&byRequestData[4+j]) << (4*j));
@@ -414,8 +425,23 @@ void pd_request_test()
 			//开始传输数据
 			pd_send_start();						//数据开始发送
 			//数据传输完成，记录当前获取的电压/电流
-			tPD.byStatus = eSink_Request;			//Sink完成取电
-	
+				tPD.byStatus = eSink_Request;			//Sink完成取电
+
+}
+
+static uint16_t pd_limit_u16(uint16_t value,uint16_t min_v,uint16_t max_v)
+{
+	if(value < min_v)
+		return min_v;
+	if(value > max_v)
+		return max_v;
+	return value;
+}
+
+static void pd_fill_rdo_payload(uint32_t wRdo)
+{
+	for(uint8_t k = 0; k < 8; k++)
+		byRequestData[8 + k] = (wRdo >> (k * 4)) & 0x0f;
 }
 //=====================================================================================
 /** \brief		:重新取电，需明确非第一次取电
@@ -425,16 +451,6 @@ void pd_request_test()
 volatile uint16_t	hwGet_VBus,hwGet_Current;
 uint8_t	pd_sink_RequestPower(PD_Sink_Request_e eSink_Voltage)
 {
-	uint8_t	byGainStatus = eRequest_Null;
-	uint8_t byRequest_Data = eRequest_OK;
-
-	//未准备好取电
-	if(tPD.Status.bAllowRequest == FALSE)
-		return FALSE;
-	//数据记录当中无数据
-	if(!tPD.Power.byType)
-		return FALSE;
-	//判断取电电压
 	volatile uint16_t	hwSink_Voltage = 5000;
 	switch(eSink_Voltage)
 	{
@@ -443,33 +459,59 @@ uint8_t	pd_sink_RequestPower(PD_Sink_Request_e eSink_Voltage)
 		case e12V:hwSink_Voltage = 12000;break;
 		case e15V:hwSink_Voltage = 15000;break;
 		case e20V:hwSink_Voltage = 20000;break;
-		default:byGainStatus = FALSE;break;
+		default:return FALSE;
 	}
-	//没有符合的取电内容
-	if(byGainStatus == FALSE)
-		return FALSE;
+	return pd_sink_request_power_ex(hwSink_Voltage,tPD.hwGetCurrent);
+}
+
+uint8_t	pd_sink_request_power_ex(uint16_t hwVoltage_mV,uint16_t hwCurrent_mA)
+{
+	uint8_t	byGainStatus = FALSE;
+	uint8_t byRequest_Data = eRequest_OK;
+	uint8_t byMatched = FALSE;
 	//赋值当前取电电压电流状态
-	
-	hwGet_VBus = tPD.hwNowVoltage;		
+	if(tPD.Status.bAllowRequest == FALSE)
+		return FALSE;
+	if(!tPD.Power.byType)
+		return FALSE;
+
+	hwGet_VBus = tPD.hwNowVoltage;
 	hwGet_Current = tPD.hwNowCurrent;
+	tPD.Power.byGetlocation = tPD.Power.byType;
 	//查询取电电压、电流
-	for(uint8_t i = 0; i < tPD.Power.byType; i ++) 
+	for(uint8_t i = 0; i < tPD.Power.byType; i ++)
 	{
-		//
-		if(tPD.Power.hwVoltage[i] == hwSink_Voltage)
+		if(tPD.Power.byPowerType[i] == ePower_Type_PDO && tPD.Power.hwVoltage[i] == hwVoltage_mV)
 		{
 			hwGet_VBus = tPD.Power.hwVoltage[i];
-			hwGet_Current = tPD.Power.hwCurrent[i];
+			hwGet_Current = (tPD.Power.hwCurrent[i] >= hwCurrent_mA) ? hwCurrent_mA : tPD.Power.hwCurrent[i];
 			tPD.Power.byGetlocation = i;
+			tPD.Power.byGetType = tPD.Power.byPowerType[i];
+			byMatched = TRUE;
+			break;
+		}
+		if((tPD.Power.byPowerType[i] == ePower_Type_PPS || tPD.Power.byPowerType[i] == ePower_Type_AVS) &&
+			(hwVoltage_mV >= tPD.Power.hwVoltage_Min[i]) && (hwVoltage_mV <= tPD.Power.hwVoltage_Max[i]))
+		{
+			hwGet_VBus = hwVoltage_mV;
+			hwGet_Current = (tPD.Power.hwCurrent[i] >= hwCurrent_mA) ? hwCurrent_mA : tPD.Power.hwCurrent[i];
+			tPD.Power.byGetlocation = i;
+			tPD.Power.byGetType = tPD.Power.byPowerType[i];
+			byMatched = TRUE;
+			break;
 		}
 	}
+	if(!byMatched)
+		return FALSE;
 	//---------------------------------------------------------------------
 	if(tPD.hwNowVoltage != hwGet_VBus || tPD.hwNowCurrent != hwGet_Current)
 	{
 		//有新的取电状态
 		tPD.hwGetVoltage = hwGet_VBus;
 		tPD.hwGetCurrent = hwGet_Current;
-		//开始取电			
+		tPD.Power.hwRecordVoltage = hwGet_VBus;
+		tPD.Power.hwRecordCurrent = hwGet_Current;
+		//开始取电
 		tPD.Status.bAllowRequest = FALSE;//修改可取电状态
 //		uint8_t byRequest_Data = pd_sink_again_RequestPower();//与Source沟通重新取电
 		disable_global_interrupt();	
@@ -483,28 +525,33 @@ uint8_t	pd_sink_RequestPower(PD_Sink_Request_e eSink_Voltage)
 			if(tPD.byStatus == eSource_Accept)
 			{
 				byRequest_Data = eRequest_OK;
-				tPD.hwNowVoltage = tPD.Power.hwVoltage[tPD.Power.byGetlocation];
-				tPD.hwNowCurrent = tPD.Power.hwCurrent[tPD.Power.byGetlocation];
+				tPD.hwNowVoltage = tPD.Power.hwRecordVoltage;
+				tPD.hwNowCurrent = tPD.Power.hwRecordCurrent;
 				break;
 			}
 			else
 				byRequest_Data = eRequest_TimeOut;
 		}
 		
-		if(byRequest_Data == eRequest_OK)
-		{//Source返回同意数据请求
-			if(tPD.hwGetVoltage != tPD.hwNowVoltage)
-				byGainStatus = FALSE;//获取电压与当前取电电压一致，取电成功
-			else
-				byGainStatus = TRUE;//获取电压与当前取电电压不一致，取电失败
-		}
+			if(byRequest_Data == eRequest_OK)
+			{//Source返回同意数据请求
+				if(tPD.hwGetVoltage != tPD.hwNowVoltage)
+					byGainStatus = FALSE;//获取电压与当前取电电压不一致，取电失败
+				else
+					byGainStatus = TRUE;//获取电压与当前取电电压一致，取电成功
+			}
 		else
 			byGainStatus = FALSE;//Source回复数据超时，取电失败
 	}
 	else
 		byGainStatus = TRUE;		//如果取电状态与当前输出状态一致，认为取电成功直接退出
-	
+
 	return byGainStatus;
+}
+
+uint8_t	pd_power_supply(uint16_t hwVoltage_mV,uint16_t hwCurrent_mA)
+{
+	return pd_sink_request_power_ex(hwVoltage_mV,hwCurrent_mA);
 }
 //=====================================================================================
 /** \brief		:pd_sink_again_RequestPower
